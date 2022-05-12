@@ -205,13 +205,6 @@ class Node:
         if parameter_overrides is not None:
             self._parameter_overrides.update({p.name: p for p in parameter_overrides})
 
-        # Clock that has support for ROS time.
-        # Note: parameter overrides and parameter event publisher need to be ready at this point
-        # to be able to declare 'use_sim_time' if it was not declared yet.
-        self._clock = ROSClock()
-        self._time_source = TimeSource(node=self)
-        self._time_source.attach_clock(self._clock)
-
         if automatically_declare_parameters_from_overrides:
             self.declare_parameters(
                 '',
@@ -220,6 +213,13 @@ class Node:
                     for name, param in self._parameter_overrides.items()],
                 ignore_override=True,
             )
+
+        # Clock that has support for ROS time.
+        # Note: parameter overrides and parameter event publisher need to be ready at this point
+        # to be able to declare 'use_sim_time' if it was not declared yet.
+        self._clock = ROSClock()
+        self._time_source = TimeSource(node=self)
+        self._time_source.attach_clock(self._clock)
 
         if start_parameter_services:
             self._parameter_service = ParameterService(self)
