@@ -301,34 +301,40 @@ class ActionClient(Waitable):
                                 'Two goals were accepted with the same ID ({})'.format(goal_handle))
                         self._goal_handles[goal_uuid] = weakref.ref(goal_handle)
 
-                    self._pending_goal_requests[sequence_number].set_result(goal_handle)
+                    goal_request = self._pending_goal_requests[sequence_number]
                 else:
                     self._node.get_logger().warning(
                         'Ignoring unexpected goal response. There may be more than '
                         f"one action server for the action '{self._action_name}'"
                     )
+            # set result outside of lock, because it can call callbacks
+            if goal_request is not None: goal_request.set_result(goal_handle)
 
         if 'cancel' in taken_data:
             sequence_number, cancel_response = taken_data['cancel']
             with self._internal_lock:
                 if sequence_number in self._pending_cancel_requests:
-                    self._pending_cancel_requests[sequence_number].set_result(cancel_response)
+                    cancel_request = self._pending_cancel_requests[sequence_number]
                 else:
                     self._node.get_logger().warning(
                         'Ignoring unexpected cancel response. There may be more than '
                         f"one action server for the action '{self._action_name}'"
                     )
+            # set result outside of lock, because it can call callbacks
+            if cancel_request is not None: cancel_request.set_result(cancel_response)
 
         if 'result' in taken_data:
             sequence_number, result_response = taken_data['result']
             with self._internal_lock:
                 if sequence_number in self._pending_result_requests:
-                    self._pending_result_requests[sequence_number].set_result(result_response)
+                    result_request = self._pending_result_requests[sequence_number]
                 else:
                     self._node.get_logger().warning(
                         'Ignoring unexpected result response. There may be more than '
                         f"one action server for the action '{self._action_name}'"
                     )
+            # set result outside of lock, because it can call callbacks
+            if result_request is not None: result_request.set_result(result_response)
 
         if 'feedback' in taken_data:
             feedback_msg = taken_data['feedback']
@@ -336,7 +342,9 @@ class ActionClient(Waitable):
             # Call a registered callback if there is one
             with self._internal_lock:
                 if goal_uuid in self._feedback_callbacks:
-                    await await_or_execute(self._feedback_callbacks[goal_uuid], feedback_msg)
+                    feedback_callbacks = self._feedback_callbacks[goal_uuid]
+            # process callbacks outside of lock
+            if feedback_callbacks is not None: await await_or_execute(feedback_callbacks, feedback_msg)
 
         if 'status' in taken_data:
             # Update the status of all goal handles maintained by this Action Client
