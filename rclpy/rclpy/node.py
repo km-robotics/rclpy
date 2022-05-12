@@ -71,7 +71,7 @@ from rclpy.qos_overriding_options import _declare_qos_parameters
 from rclpy.qos_overriding_options import QoSOverridingOptions
 from rclpy.service import Service
 from rclpy.subscription import Subscription
-from rclpy.time_source import TimeSource
+from rclpy.time_source import TimeSource, USE_SIM_TIME_NAME
 from rclpy.timer import Rate
 from rclpy.timer import Timer
 from rclpy.topic_endpoint_info import TopicEndpointInfo
@@ -205,7 +205,15 @@ class Node:
         if parameter_overrides is not None:
             self._parameter_overrides.update({p.name: p for p in parameter_overrides})
 
+        # Clock that has support for ROS time.
+        # Note: parameter overrides and parameter event publisher need to be ready at this point
+        # to be able to declare 'use_sim_time' if it was not declared yet.
+        self._clock = ROSClock()
+        self._time_source = TimeSource(node=self)
+        self._time_source.attach_clock(self._clock)
+
         if automatically_declare_parameters_from_overrides:
+            # internally ignores 'use_sim_time' parameter that will be already declared here
             self.declare_parameters(
                 '',
                 [
@@ -213,13 +221,6 @@ class Node:
                     for name, param in self._parameter_overrides.items()],
                 ignore_override=True,
             )
-
-        # Clock that has support for ROS time.
-        # Note: parameter overrides and parameter event publisher need to be ready at this point
-        # to be able to declare 'use_sim_time' if it was not declared yet.
-        self._clock = ROSClock()
-        self._time_source = TimeSource(node=self)
-        self._time_source.attach_clock(self._clock)
 
         if start_parameter_services:
             self._parameter_service = ParameterService(self)
@@ -481,7 +482,7 @@ class Node:
             descriptors.update({name: descriptor})
 
         parameters_already_declared = [
-            parameter.name for parameter in parameter_list if parameter.name in self._parameters
+            parameter.name for parameter in parameter_list if parameter.name in self._parameters and parameter.name != USE_SIM_TIME_NAME
         ]
         if any(parameters_already_declared):
             raise ParameterAlreadyDeclaredException(parameters_already_declared)
