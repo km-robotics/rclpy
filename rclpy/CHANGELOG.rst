@@ -255,6 +255,11 @@ Changelog for package rclpy
 * Allow to create a subscription with a callback that also receives the message info (`#922 <https://github.com/ros2/rclpy/issues/922>`_)
 * Contributors: Ivan Santiago Paunovic, Tomoya Fujita
 
+3.3.4 (2022-05-17)
+------------------
+* check if the context is already shutdown. (`#939 <https://github.com/ros2/rclpy/issues/939>`_) (`#943 <https://github.com/ros2/rclpy/issues/943>`_)
+* Contributors: mergify[bot]
+
 3.3.3 (2022-05-10)
 ------------------
 * remove feedback callback when the goal has been completed. (`#927 <https://github.com/ros2/rclpy/issues/927>`_) (`#931 <https://github.com/ros2/rclpy/issues/931>`_)
