@@ -341,6 +341,7 @@ class ActionClient(Waitable):
             goal_uuid = bytes(feedback_msg.goal_id.uuid)
             # Call a registered callback if there is one
             with self._internal_lock:
+                feedback_callbacks = None
                 if goal_uuid in self._feedback_callbacks:
                     feedback_callbacks = self._feedback_callbacks[goal_uuid]
             # process callbacks outside of lock
