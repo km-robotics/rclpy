@@ -287,6 +287,7 @@ class ActionClient(Waitable):
         """
         if 'goal' in taken_data:
             sequence_number, goal_response = taken_data['goal']
+            goal_request = None
             with self._internal_lock:
                 if sequence_number in self._sequence_number_to_goal_id:
                     goal_handle = ClientGoalHandle(
@@ -312,6 +313,7 @@ class ActionClient(Waitable):
 
         if 'cancel' in taken_data:
             sequence_number, cancel_response = taken_data['cancel']
+            cancel_request = None
             with self._internal_lock:
                 if sequence_number in self._pending_cancel_requests:
                     cancel_request = self._pending_cancel_requests[sequence_number]
@@ -325,6 +327,7 @@ class ActionClient(Waitable):
 
         if 'result' in taken_data:
             sequence_number, result_response = taken_data['result']
+            result_request = None
             with self._internal_lock:
                 if sequence_number in self._pending_result_requests:
                     result_request = self._pending_result_requests[sequence_number]
@@ -340,8 +343,8 @@ class ActionClient(Waitable):
             feedback_msg = taken_data['feedback']
             goal_uuid = bytes(feedback_msg.goal_id.uuid)
             # Call a registered callback if there is one
+            feedback_callbacks = None
             with self._internal_lock:
-                feedback_callbacks = None
                 if goal_uuid in self._feedback_callbacks:
                     feedback_callbacks = self._feedback_callbacks[goal_uuid]
             # process callbacks outside of lock
