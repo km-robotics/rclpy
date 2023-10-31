@@ -295,6 +295,7 @@ class ActionClient(Waitable):
         call any user-defined callbacks (e.g. feedback).
         """
         if 'goal' in taken_data:
+            goal_request = None
             sequence_number, goal_response = taken_data['goal']
             with self._internal_lock:
                 if sequence_number in self._goal_sequence_number_to_goal_id:
@@ -320,6 +321,7 @@ class ActionClient(Waitable):
             if goal_request is not None: goal_request.set_result(goal_handle)
 
         if 'cancel' in taken_data:
+            cancel_request = None
             sequence_number, cancel_response = taken_data['cancel']
             with self._internal_lock:
                 if sequence_number in self._pending_cancel_requests:
@@ -333,6 +335,7 @@ class ActionClient(Waitable):
             if cancel_request is not None: cancel_request.set_result(cancel_response)
 
         if 'result' in taken_data:
+            result_request = None
             sequence_number, result_response = taken_data['result']
             with self._internal_lock:
                 if sequence_number in self._pending_result_requests:
@@ -346,6 +349,7 @@ class ActionClient(Waitable):
             if result_request is not None: result_request.set_result(result_response)
 
         if 'feedback' in taken_data:
+            feedback_callbacks = None
             feedback_msg = taken_data['feedback']
             goal_uuid = bytes(feedback_msg.goal_id.uuid)
             # Call a registered callback if there is one
