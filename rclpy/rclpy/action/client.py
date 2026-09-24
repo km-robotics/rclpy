@@ -281,7 +281,10 @@ class ActionClient(Generic[GoalT, ResultT, FeedbackT, ImplT],
         self._enable_feedback_msg_optimization = enable_feedback_msg_optimization
 
         self._logger = self._node.get_logger().get_child('action_client')
-        self._lock = threading.Lock()
+        # Guards the client handle and all internal bookkeeping (pending requests, goal handles,
+        # feedback callbacks). Futures are resolved and user callbacks are invoked outside of
+        # this lock, because they may acquire application locks and deadlock with the client.
+        self._lock = threading.RLock()
 
         callback_group.add_entity(self)
         self._node.add_waitable(self)
@@ -303,45 +306,48 @@ class ActionClient(Generic[GoalT, ResultT, FeedbackT, ImplT],
         :return: The sequence number associated with the removed future, or
             None if the future was not found in the list.
         """
-        for seq, req_future in list(pending_requests.items()):
-            if future == req_future:
-                try:
-                    del pending_requests[seq]
-                except KeyError:
-                    pass
-                else:
-                    self.remove_future(future)
-                    return seq
+        with self._lock:
+            for seq, req_future in list(pending_requests.items()):
+                if future == req_future:
+                    try:
+                        del pending_requests[seq]
+                    except KeyError:
+                        pass
+                    else:
+                        self.remove_future(future)
+                        return seq
         return None
 
     def _remove_pending_goal_request(self,
                                      future: Future[ClientGoalHandle[GoalT, ResultT, FeedbackT,
                                                                      ImplT]]
                                      ) -> None:
-        seq = self._remove_pending_request(future, self._pending_goal_requests)
-        if seq in self._goal_sequence_number_to_goal_id:
-            del self._goal_sequence_number_to_goal_id[seq]
+        with self._lock:
+            seq = self._remove_pending_request(future, self._pending_goal_requests)
+            if seq in self._goal_sequence_number_to_goal_id:
+                del self._goal_sequence_number_to_goal_id[seq]
 
     def _remove_pending_cancel_request(self, future: Future[CancelGoal.Response]) -> None:
         self._remove_pending_request(future, self._pending_cancel_requests)
 
     def _remove_pending_result_request(self, future: Future[GetResultServiceResponse[ResultT]]
                                        ) -> None:
-        seq = self._remove_pending_request(future, self._pending_result_requests)
-        if seq in self._result_sequence_number_to_goal_id:
-            goal_uuid = bytes(self._result_sequence_number_to_goal_id[seq].uuid)
-            del self._result_sequence_number_to_goal_id[seq]
-            # remove feedback_callback if user is aware of result and it's been received
-            if goal_uuid in self._feedback_callbacks:
-                del self._feedback_callbacks[goal_uuid]
+        with self._lock:
+            seq = self._remove_pending_request(future, self._pending_result_requests)
+            if seq in self._result_sequence_number_to_goal_id:
+                goal_uuid = bytes(self._result_sequence_number_to_goal_id[seq].uuid)
+                del self._result_sequence_number_to_goal_id[seq]
+                # remove feedback_callback if user is aware of result and it's been received
+                if goal_uuid in self._feedback_callbacks:
+                    del self._feedback_callbacks[goal_uuid]
 
-            if self._enable_feedback_msg_optimization:
-                # Remove goal ID from feedback subscription content filter
-                try:
-                    _ = self._client_handle.configure_feedback_subscription_filter_remove_goal_id(
-                        goal_uuid)
-                except RCLError as e:
-                    self._logger.warning(f'{e}')
+                if self._enable_feedback_msg_optimization:
+                    # Remove goal ID from feedback subscription content filter
+                    try:
+                        _ = self._client_handle \
+                            .configure_feedback_subscription_filter_remove_goal_id(goal_uuid)
+                    except RCLError as e:
+                        self._logger.warning(f'{e}')
 
     # Start Waitable API
     def is_ready(self, wait_set: _rclpy.WaitSet) -> bool:
@@ -408,36 +414,44 @@ class ActionClient(Generic[GoalT, ResultT, FeedbackT, ImplT],
         """
         if 'goal' in taken_data:
             sequence_number, goal_response = taken_data['goal']
-            if sequence_number in self._goal_sequence_number_to_goal_id:
-                goal_handle = ClientGoalHandle(
-                    self,
-                    self._goal_sequence_number_to_goal_id[sequence_number],
-                    goal_response)
+            goal_future = None
+            with self._lock:
+                if sequence_number in self._goal_sequence_number_to_goal_id:
+                    goal_handle = ClientGoalHandle(
+                        self,
+                        self._goal_sequence_number_to_goal_id[sequence_number],
+                        goal_response)
 
-                if goal_handle.accepted:
-                    goal_uuid = bytes(goal_handle.goal_id.uuid)
-                    if goal_uuid in self._goal_handles:
-                        raise RuntimeError(
-                            'Two goals were accepted with the same ID ({})'.format(goal_handle))
-                    self._goal_handles[goal_uuid] = weakref.ref(goal_handle)
-                    if (self._enable_feedback_msg_optimization):
-                        try:
-                            _ = self._client_handle \
-                                .configure_feedback_subscription_filter_add_goal_id(goal_uuid)
-                        except RCLError as e:
-                            self._logger.warning(f'{e}')
+                    if goal_handle.accepted:
+                        goal_uuid = bytes(goal_handle.goal_id.uuid)
+                        if goal_uuid in self._goal_handles:
+                            raise RuntimeError(
+                                'Two goals were accepted with the same ID ({})'.format(
+                                    goal_handle))
+                        self._goal_handles[goal_uuid] = weakref.ref(goal_handle)
+                        if (self._enable_feedback_msg_optimization):
+                            try:
+                                _ = self._client_handle \
+                                    .configure_feedback_subscription_filter_add_goal_id(goal_uuid)
+                            except RCLError as e:
+                                self._logger.warning(f'{e}')
 
-                self._pending_goal_requests[sequence_number].set_result(goal_handle)
-            else:
-                self._logger.warning(
-                    'Ignoring unexpected goal response. There may be more than '
-                    f"one action server for the action '{self._action_name}'"
-                )
+                    goal_future = self._pending_goal_requests.get(sequence_number)
+                else:
+                    self._logger.warning(
+                        'Ignoring unexpected goal response. There may be more than '
+                        f"one action server for the action '{self._action_name}'"
+                    )
+            # Resolve outside of the lock, done callbacks may run arbitrary user code
+            if goal_future is not None:
+                goal_future.set_result(goal_handle)
 
         if 'cancel' in taken_data:
             sequence_number, cancel_response = taken_data['cancel']
-            if sequence_number in self._pending_cancel_requests:
-                self._pending_cancel_requests[sequence_number].set_result(cancel_response)
+            with self._lock:
+                cancel_future = self._pending_cancel_requests.get(sequence_number)
+            if cancel_future is not None:
+                cancel_future.set_result(cancel_response)
             else:
                 self._logger.warning(
                     'Ignoring unexpected cancel response. There may be more than '
@@ -446,8 +460,10 @@ class ActionClient(Generic[GoalT, ResultT, FeedbackT, ImplT],
 
         if 'result' in taken_data:
             sequence_number, result_response = taken_data['result']
-            if sequence_number in self._pending_result_requests:
-                self._pending_result_requests[sequence_number].set_result(result_response)
+            with self._lock:
+                result_future = self._pending_result_requests.get(sequence_number)
+            if result_future is not None:
+                result_future.set_result(result_response)
             else:
                 self._logger.warning(
                     'Ignoring unexpected result response. There may be more than '
@@ -457,35 +473,38 @@ class ActionClient(Generic[GoalT, ResultT, FeedbackT, ImplT],
         if 'feedback' in taken_data:
             feedback_msg = taken_data['feedback']
             goal_uuid = bytes(feedback_msg.goal_id.uuid)
-            # Call a registered callback if there is one
-            if goal_uuid in self._feedback_callbacks:
-                await await_or_execute(self._feedback_callbacks[goal_uuid], feedback_msg)
+            with self._lock:
+                feedback_callback = self._feedback_callbacks.get(goal_uuid)
+            # Call a registered callback if there is one, outside of the lock
+            if feedback_callback is not None:
+                await await_or_execute(feedback_callback, feedback_msg)
 
         if 'status' in taken_data:
             # Update the status of all goal handles maintained by this Action Client
-            for status_msg in taken_data['status'].status_list:
-                goal_uuid = bytes(status_msg.goal_info.goal_id.uuid)
-                status = status_msg.status
+            with self._lock:
+                for status_msg in taken_data['status'].status_list:
+                    goal_uuid = bytes(status_msg.goal_info.goal_id.uuid)
+                    status = status_msg.status
 
-                if goal_uuid in self._goal_handles:
-                    status_goal_handle = self._goal_handles[goal_uuid]()
-                    if status_goal_handle is not None:
-                        status_goal_handle._status = status
-                        # Remove "done" goals from the list
-                        if (GoalStatus.STATUS_SUCCEEDED == status or
-                                GoalStatus.STATUS_CANCELED == status or
-                                GoalStatus.STATUS_ABORTED == status):
+                    if goal_uuid in self._goal_handles:
+                        status_goal_handle = self._goal_handles[goal_uuid]()
+                        if status_goal_handle is not None:
+                            status_goal_handle._status = status
+                            # Remove "done" goals from the list
+                            if (GoalStatus.STATUS_SUCCEEDED == status or
+                                    GoalStatus.STATUS_CANCELED == status or
+                                    GoalStatus.STATUS_ABORTED == status):
+                                del self._goal_handles[goal_uuid]
+                                if self._enable_feedback_msg_optimization:
+                                    try:
+                                        _ = self._client_handle \
+                                            .configure_feedback_subscription_filter_remove_goal_id(
+                                                goal_uuid)
+                                    except RCLError as e:
+                                        self._logger.warning(f'{e}')
+                        else:
+                            # Weak reference is None
                             del self._goal_handles[goal_uuid]
-                            if self._enable_feedback_msg_optimization:
-                                try:
-                                    _ = self._client_handle \
-                                        .configure_feedback_subscription_filter_remove_goal_id(
-                                            goal_uuid)
-                                except RCLError as e:
-                                    self._logger.warning(f'{e}')
-                    else:
-                        # Weak reference is None
-                        del self._goal_handles[goal_uuid]
 
     def get_num_entities(self) -> NumberOfEntities:
         """Return number of each type of entity used in the wait set."""
@@ -592,16 +611,17 @@ class ActionClient(Generic[GoalT, ResultT, FeedbackT, ImplT],
             if sequence_number in self._pending_goal_requests:
                 raise RuntimeError(
                     'Sequence ({}) conflicts with pending goal request'.format(sequence_number))
+            # Register the feedback callback under the lock, so early feedback is not dropped
+            if feedback_callback is not None:
+                # TODO(jacobperron): Move conversion function to a general-use package
+                goal_uuid_bytes = bytes(request.goal_id.uuid)
+                self._feedback_callbacks[goal_uuid_bytes] = feedback_callback
+
             self._pending_goal_requests[sequence_number] = future
             self._goal_sequence_number_to_goal_id[sequence_number] = request.goal_id
             future.add_done_callback(self._remove_pending_goal_request)
             # Add future so executor is aware
             self.add_future(future)
-
-        if feedback_callback is not None:
-            # TODO(jacobperron): Move conversion function to a general-use package
-            goal_uuid_bytes = bytes(request.goal_id.uuid)
-            self._feedback_callbacks[goal_uuid_bytes] = feedback_callback
 
         return future
 
